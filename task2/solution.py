@@ -1,61 +1,83 @@
-import requests
-import re
+"""Collect and aggregate animal entries from Russian Wikipedia."""
+
 import csv
-import time
-from bs4 import BeautifulSoup
+from collections.abc import Iterable, Iterator
+from pathlib import Path
+
+import requests
 
 
-BASE_URL = 'https://ru.wikipedia.org/'
-URL = 'https://ru.wikipedia.org/wiki/Категория:Животные_по_алфавиту'
+API_URL = "https://ru.wikipedia.org/w/api.php"
+CATEGORY = "Категория:Животные_по_алфавиту"
+RUSSIAN_ALPHABET = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
+REQUEST_TIMEOUT = 10
+OUTPUT_FILE = Path(__file__).with_name("beasts.csv")
 
-def is_russian_letter(char: str) -> bool:
-    return bool(re.match(r'[А-Яа-я]', char))
+USER_AGENT = (
+    "tetrika-python-assignment/1.0 "
+    "(https://github.com/nikolaitolmachev/tetrika-python-assignment)"
+)
 
-def scrape() -> dict:
-    result = {}
 
-    current_url = URL
+def iter_category_titles() -> Iterator[str]:
+    """Yield all article titles from the Wikipedia category."""
+    params = {
+        "action": "query",
+        "list": "categorymembers",
+        "cmtitle": CATEGORY,
+        "cmnamespace": 0,
+        "cmlimit": "max",
+        "format": "json",
+        "formatversion": 2,
+    }
 
     while True:
-        print(current_url)
+        response = requests.get(
+            API_URL,
+            params=params.copy(),
+            headers={"User-Agent": USER_AGENT},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
 
-        resp = requests.get(current_url)
-        soup = BeautifulSoup(resp.content, 'html.parser')
-        letters = soup.select('div.mw-category.mw-category-columns > div.mw-category-group')
-        for letter in letters:
-            current_letter = letter.select('h3')[0].text.strip()
-            print(f'Current letter: {current_letter}')
+        data = response.json()
 
-            if not is_russian_letter(current_letter):
-                print('STOP')
-                return result
+        for member in data["query"]["categorymembers"]:
+            yield member["title"]
 
-            print('Doing...')
-            if result.get(current_letter) is None:
-                result[current_letter] = 0
-
-            rows = letter.select('ul > li')
-            print(len(rows))
-            result[current_letter] += len(rows)
-
-        links = soup.select('div#mw-pages > a')
-        if len(links) > 1:
-            current_url = BASE_URL + links[1]['href']
-        else:
+        continuation = data.get("continue")
+        if continuation is None:
             break
 
-        time.sleep(1)
-        print()
+        params["cmcontinue"] = continuation["cmcontinue"]
 
-    return result
 
-def main():
-    result = scrape()
+def count_by_initial(titles: Iterable[str]) -> dict[str, int]:
+    """Count titles by their first Russian letter."""
+    counts = dict.fromkeys(RUSSIAN_ALPHABET, 0)
 
-    with open('beasts.csv', 'w', encoding='utf-8-sig', newline='') as f:
-        writer = csv.writer(f)
-        for key, value in result.items():
-            writer.writerow([key,value])
+    for title in titles:
+        if not title:
+            continue
+
+        initial = title[0].upper()
+
+        if initial in counts:
+            counts[initial] += 1
+
+    return counts
+
+
+def write_csv(counts: dict[str, int], path: Path = OUTPUT_FILE) -> None:
+    """Write letter counts to a CSV file."""
+    with path.open("w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerows(counts.items())
+
+
+def main() -> None:
+    counts = count_by_initial(iter_category_titles())
+    write_csv(counts)
 
 
 if __name__ == "__main__":
